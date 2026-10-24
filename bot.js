@@ -59,7 +59,6 @@ for (const name of requiredEnv) {
     );
   }
 }
-
 if (SHARED_SECRET.length < 32) {
   throw new Error(
     "SHARED_SECRET must be at least 32 characters."
