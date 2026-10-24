@@ -1,3 +1,4 @@
+
 const express = require("express");
 const {
   Client,
@@ -172,8 +173,7 @@ function durationFor(name) {
 // ---------- Database setup and migrations ----------
 
 async function setupDatabase() {
-  // Create tables without indexes first. Existing tables are not altered
-  // by CREATE TABLE IF NOT EXISTS, so migrations below are essential.
+  // Create tables without indexes first.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS links (
       discord_id TEXT PRIMARY KEY,
@@ -224,7 +224,7 @@ async function setupDatabase() {
     );
   `);
 
-  // Migrate existing keys tables before any index refers to these columns.
+  // Migrate existing keys tables.
   await pool.query(`
     ALTER TABLE keys
       ADD COLUMN IF NOT EXISTS duration_hours INTEGER;
@@ -317,7 +317,13 @@ async function setupDatabase() {
       ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
   `);
 
-  // Ensure these indexes are only created after column migrations.
+  // FIX: manual whitelist grants use NULL for key_hash.
+  await pool.query(`
+    ALTER TABLE access_grants
+      ALTER COLUMN key_hash DROP NOT NULL;
+  `);
+
+  // Create indexes after column migrations.
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_access_grants_roblox
       ON access_grants (roblox_id);
@@ -329,7 +335,7 @@ async function setupDatabase() {
       ON keys (inventory_type, inventory_status);
   `);
 
-  // Blacklist previously revoked keys without storing their plaintext.
+  // Blacklist previously revoked keys without storing plaintext.
   for (const plainKey of PRE_REVOKED_KEYS) {
     const keyHash = hashKey(plainKey);
 
@@ -556,6 +562,7 @@ async function logTeleport({
     ],
   });
 }
+
  // ---------- Slash command definitions ----------
 
 const commands = [
@@ -859,17 +866,19 @@ async function grantAccess({
     throw new Error("Invalid Discord or Roblox ID.");
   }
 
+  if (
+    !lifetime &&
+    (!Number.isFinite(Number(durationHours)) ||
+      Number(durationHours) <= 0)
+  ) {
+    throw new Error("Invalid access duration.");
+  }
+
   const expiresAt = lifetime
     ? null
     : new Date(
         Date.now() + Number(durationHours) * 60 * 60 * 1000,
       );
-
-  if (!lifetime &&
-      (!Number.isFinite(Number(durationHours)) ||
-       Number(durationHours) <= 0)) {
-    throw new Error("Invalid access duration.");
-  }
 
   await pool.query(
     `INSERT INTO access_grants (
@@ -890,7 +899,7 @@ async function grantAccess({
   return expiresAt;
 }
 
- // ---------- /link command handlers ----------
+// ---------- /link command handlers ----------
 
 async function handleLinkCommand(interaction) {
   const discordId = interaction.user.id;
@@ -1385,7 +1394,7 @@ async function handleBlacklistKey(interaction) {
   }
 }
 
- // ---------- Admin: grant whitelist access ----------
+// ---------- Admin: grant whitelist access ----------
 
 async function handleWhitelistUser(interaction) {
   if (!canManageKeys(interaction.member)) {
@@ -1513,8 +1522,6 @@ async function handleExtendKey(interaction) {
       duration.hours * 60 * 60 * 1000,
     );
 
-    // Extend the existing active grants together so the stored grants
-    // remain consistent with the resulting whitelist expiry.
     await pool.query(
       `UPDATE access_grants
        SET expires_at = $1
@@ -1610,7 +1617,7 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// This endpoint is for trusted server-to-server integrations only.
+// Trusted server-to-server integrations only.
 // Never expose SHARED_SECRET in a browser or Roblox client script.
 app.post("/api/teleport", (req, res, next) => {
   const secret = req.get("x-teleport-secret");
