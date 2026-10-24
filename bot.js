@@ -53,13 +53,13 @@ if (missingEnv.length > 0) {
 
 // ---------- Configuration ----------
 
-const DURATIONS = {
+const DURATIONS = Object.freeze({
   "1hour": { hours: 1, lifetime: false, label: "1 hour" },
   "1day": { hours: 24, lifetime: false, label: "1 day" },
   "1week": { hours: 168, lifetime: false, label: "1 week" },
   "1month": { hours: 720, lifetime: false, label: "1 month" },
   lifetime: { hours: null, lifetime: true, label: "Lifetime" },
-};
+});
 
 const PRE_REVOKED_KEYS = [
   "KEY-G55SF6JXDAV3",
@@ -166,14 +166,41 @@ function canManageKeys(member) {
   );
 }
 
+// Always return a validated duration object or null.
+// Lifetime keys intentionally use hours: null.
 function durationFor(name) {
-  return DURATIONS[String(name || "").toLowerCase()] || null;
+  const key = String(name || "").trim().toLowerCase();
+  const duration = DURATIONS[key];
+
+  if (!duration) {
+    return null;
+  }
+
+  if (duration.lifetime === true) {
+    return {
+      hours: null,
+      lifetime: true,
+      label: duration.label,
+    };
+  }
+
+  if (
+    !Number.isFinite(duration.hours) ||
+    duration.hours <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    hours: duration.hours,
+    lifetime: false,
+    label: duration.label,
+  };
 }
 
 // ---------- Database setup and migrations ----------
 
 async function setupDatabase() {
-  // Create tables without indexes first.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS links (
       discord_id TEXT PRIMARY KEY,
@@ -224,7 +251,7 @@ async function setupDatabase() {
     );
   `);
 
-  // Migrate existing keys tables.
+  // Migrate older keys tables.
   await pool.query(`
     ALTER TABLE keys
       ADD COLUMN IF NOT EXISTS duration_hours INTEGER;
@@ -252,9 +279,13 @@ async function setupDatabase() {
 
     ALTER TABLE keys
       ADD COLUMN IF NOT EXISTS inventory_note TEXT;
+
+    -- Lifetime keys need NULL duration_hours.
+    ALTER TABLE keys
+      ALTER COLUMN duration_hours DROP NOT NULL;
   `);
 
-  // Migrate existing links tables.
+  // Migrate older links tables.
   await pool.query(`
     ALTER TABLE links
       ADD COLUMN IF NOT EXISTS roblox_username TEXT;
@@ -264,7 +295,7 @@ async function setupDatabase() {
       NOT NULL DEFAULT NOW();
   `);
 
-  // Copy the legacy username column when it exists.
+  // Copy a legacy username column if it exists.
   const legacyNameColumn = await pool.query(`
     SELECT 1
     FROM information_schema.columns
@@ -291,7 +322,7 @@ async function setupDatabase() {
       ALTER COLUMN roblox_username SET NOT NULL;
   `);
 
-  // Migrate access-grant columns for older installations.
+  // Migrate older access_grants tables.
   await pool.query(`
     ALTER TABLE access_grants
       ADD COLUMN IF NOT EXISTS key_hash TEXT;
@@ -315,15 +346,13 @@ async function setupDatabase() {
 
     ALTER TABLE access_grants
       ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
-  `);
 
-  // FIX: manual whitelist grants use NULL for key_hash.
-  await pool.query(`
+    -- Manual grants do not belong to a generated key.
     ALTER TABLE access_grants
       ALTER COLUMN key_hash DROP NOT NULL;
   `);
 
-  // Create indexes after column migrations.
+  // Indexes are created after column migrations.
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_access_grants_roblox
       ON access_grants (roblox_id);
@@ -562,6 +591,9 @@ async function logTeleport({
     ],
   });
 }
+
+// ---------- END OF PART 1 ----------
+// Paste Part 2 directly below this line.
 
  // ---------- Slash command definitions ----------
 
@@ -823,6 +855,18 @@ async function createKeyRecord(durationName, inventoryType = null) {
     throw new Error("Unsupported key duration.");
   }
 
+  // Explicitly validate the values before inserting into PostgreSQL.
+  const hours = duration.lifetime ? null : Number(duration.hours);
+
+  if (
+    !duration.lifetime &&
+    (!Number.isFinite(hours) || hours <= 0)
+  ) {
+    throw new Error(
+      `Invalid duration configuration for "${durationName}".`,
+    );
+  }
+
   for (let attempt = 0; attempt < 5; attempt++) {
     const plainKey = generateKey();
     const keyHash = hashKey(plainKey);
@@ -836,8 +880,8 @@ async function createKeyRecord(durationName, inventoryType = null) {
          VALUES ($1, $2, $3, $4, 'active')`,
         [
           keyHash,
-          duration.hours,
-          duration.lifetime,
+          hours,
+          Boolean(duration.lifetime),
           inventoryType,
         ],
       );
@@ -886,7 +930,7 @@ async function grantAccess({
      )
      VALUES ($1, $2, $3, $4, $5)`,
     [
-      keyHash,
+      keyHash || null,
       String(discordId),
       id,
       expiresAt,
@@ -1618,7 +1662,7 @@ app.get("/health", (_req, res) => {
 });
 
 // Trusted server-to-server integrations only.
-// Never expose SHARED_SECRET in a browser or Roblox client script.
+// Never expose either secret in a browser or Roblox client script.
 app.post("/api/teleport", (req, res, next) => {
   const secret = req.get("x-teleport-secret");
 
