@@ -1,4 +1,3 @@
-
 const express = require("express");
 const {
   Client,
@@ -557,7 +556,6 @@ async function logTeleport({
     ],
   });
 }
-
  // ---------- Slash command definitions ----------
 
 const commands = [
@@ -1789,4 +1787,4 @@ process.once("SIGINT", () => {
 start().catch(error => {
   console.error("Fatal startup error:", error);
   process.exit(1);
-});
+  
