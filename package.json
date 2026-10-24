@@ -5,7 +5,8 @@
   "description": "KeyVault Discord and Roblox whitelist bot",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "import-keys": "node import-keys.js"
   },
   "engines": {
     "node": "22.x"
